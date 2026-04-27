@@ -1,90 +1,52 @@
 #include "matrix.h"
 
-#include <stdio.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 
-static int matrix_mul_overflow(size_t a, size_t b, size_t *out)
-{
-    if (a == 0 || b == 0) {
-        *out = 0;
-        return 0;
-    }
-
-    if (a > SIZE_MAX / b) {
-        return 1;
-    }
-
-    *out = a * b;
-    return 0;
+static int matrix_mul_overflow(size_t a, size_t b, size_t *out) {
+    if (a == 0 || b == 0) return *out = 0, 0;
+    if (a > SIZE_MAX / b) return 1;
+    return *out = a * b, 0;
 }
 
-int matrix_is_valid(const Matrix *m)
-{
-    if (m == NULL) {
-        return 0;
-    }
-
-    if (m->rows == 0 || m->cols == 0) {
-        return 0;
-    }
-
+int matrix_is_valid(const Matrix *m) {
+    if (m == NULL) return 0;
+    if (m->rows == 0 || m->cols == 0) return 0;
     return m->data != NULL;
 }
 
-Matrix *matrix_create(size_t rows, size_t cols)
-{
+Matrix *matrix_create(size_t rows, size_t cols) {
     Matrix *m;
-    size_t elements;
-    size_t bytes;
+    size_t elements, bytes;
 
-    if (rows == 0 || cols == 0) {
-        return NULL;
-    }
-
-    if (matrix_mul_overflow(rows, cols, &elements)) {
-        return NULL;
-    }
-
-    if (matrix_mul_overflow(elements, sizeof(float), &bytes)) {
-        return NULL;
-    }
+    if (rows == 0 || cols == 0) return NULL;
+    if (matrix_mul_overflow(rows, cols, &elements)) return NULL;
+    if (matrix_mul_overflow(elements, sizeof(float), &bytes)) return NULL;
 
     m = (Matrix *)malloc(sizeof(*m));
-    if (m == NULL) {
-        return NULL;
-    }
+    if (m == NULL) return NULL;
 
     m->rows = rows;
     m->cols = cols;
     m->data = (float *)calloc(elements, sizeof(float));
-    if (m->data == NULL) {
-        free(m);
-        return NULL;
-    }
+    if (m->data == NULL) return free(m), NULL;
 
+    (void)bytes;
     return m;
 }
 
-void matrix_free(Matrix *m)
-{
-    if (m == NULL) {
-        return;
-    }
-
+void matrix_free(Matrix *m) {
+    if (m == NULL) return;
     free(m->data);
     free(m);
 }
 
-int matrix_fill_random(Matrix *m, unsigned int seed)
-{
-    size_t total;
-    size_t i;
+int matrix_fill_random(Matrix *m, unsigned int seed) {
+    size_t total, i;
     unsigned int state;
 
-    if (!matrix_is_valid(m)) {
-        return -1;
-    }
+    if (!matrix_is_valid(m)) return -1;
 
     total = m->rows * m->cols;
     state = seed;
@@ -96,96 +58,53 @@ int matrix_fill_random(Matrix *m, unsigned int seed)
     return 0;
 }
 
-void matrix_fill_zero(Matrix *m)
-{
-    size_t total;
-    size_t i;
+void matrix_fill_zero(Matrix *m) {
+    size_t total, i;
 
-    if (!matrix_is_valid(m)) {
-        return;
-    }
+    if (!matrix_is_valid(m)) return;
 
     total = m->rows * m->cols;
-    for (i = 0; i < total; ++i) {
-        m->data[i] = 0.0f;
-    }
+    for (i = 0; i < total; ++i) m->data[i] = 0.0f;
 }
 
-int matrix_copy(Matrix *dst, const Matrix *src)
-{
-    size_t total;
-    size_t i;
+int matrix_copy(Matrix *dst, const Matrix *src) {
+    size_t total, i;
 
-    if (!matrix_is_valid(dst) || !matrix_is_valid(src)) {
-        return -1;
-    }
-
-    if (dst->rows != src->rows || dst->cols != src->cols) {
-        return -2;
-    }
+    if (!matrix_is_valid(dst) || !matrix_is_valid(src)) return -1;
+    if (dst->rows != src->rows || dst->cols != src->cols) return -2;
 
     total = src->rows * src->cols;
-    for (i = 0; i < total; ++i) {
-        dst->data[i] = src->data[i];
-    }
-
+    for (i = 0; i < total; ++i) dst->data[i] = src->data[i];
     return 0;
 }
 
-int matrix_compare(
-    const Matrix *a,
-    const Matrix *b,
-    float atol,
-    float rtol,
-    float *max_abs_diff
-)
-{
-    size_t total;
-    size_t i;
+int matrix_compare(const Matrix *a, const Matrix *b, float atol, float rtol, float *max_abs_diff) {
+    size_t total, i;
     float local_max = 0.0f;
 
-    if (!matrix_is_valid(a) || !matrix_is_valid(b)) {
-        return -1;
-    }
-
-    if (a->rows != b->rows || a->cols != b->cols) {
-        return -2;
-    }
+    if (!matrix_is_valid(a) || !matrix_is_valid(b)) return -1;
+    if (a->rows != b->rows || a->cols != b->cols) return -2;
 
     total = a->rows * a->cols;
     for (i = 0; i < total; ++i) {
-        float av = a->data[i];
-        float bv = b->data[i];
-        float diff = av - bv;
-        float abs_diff = diff >= 0.0f ? diff : -diff;
+        float av = a->data[i], bv = b->data[i];
+        float diff = av - bv, abs_diff = diff >= 0.0f ? diff : -diff;
         float abs_b = bv >= 0.0f ? bv : -bv;
         float tol = atol + rtol * abs_b;
 
-        if (abs_diff > local_max) {
-            local_max = abs_diff;
-        }
-
+        if (abs_diff > local_max) local_max = abs_diff;
         if (abs_diff > tol) {
-            if (max_abs_diff != NULL) {
-                *max_abs_diff = local_max;
-            }
+            if (max_abs_diff != NULL) *max_abs_diff = local_max;
             return 0;
         }
     }
 
-    if (max_abs_diff != NULL) {
-        *max_abs_diff = local_max;
-    }
-
+    if (max_abs_diff != NULL) *max_abs_diff = local_max;
     return 1;
 }
 
-void matrix_print_partial(const Matrix *m, size_t max_rows, size_t max_cols)
-{
-    size_t i;
-    size_t j;
-    size_t rows;
-    size_t cols;
+void matrix_print_partial(const Matrix *m, size_t max_rows, size_t max_cols) {
+    size_t rows, cols, i, j;
 
     if (!matrix_is_valid(m)) {
         printf("<invalid matrix>\n");
@@ -196,16 +115,10 @@ void matrix_print_partial(const Matrix *m, size_t max_rows, size_t max_cols)
     cols = m->cols < max_cols ? m->cols : max_cols;
 
     for (i = 0; i < rows; ++i) {
-        for (j = 0; j < cols; ++j) {
-            printf("%10.4f ", m->data[i * m->cols + j]);
-        }
-        if (cols < m->cols) {
-            printf("...");
-        }
+        for (j = 0; j < cols; ++j) printf("%10.4f ", m->data[i * m->cols + j]);
+        if (cols < m->cols) printf("...");
         printf("\n");
     }
 
-    if (rows < m->rows) {
-        printf("...\n");
-    }
+    if (rows < m->rows) printf("...\n");
 }

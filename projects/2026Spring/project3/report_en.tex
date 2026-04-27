@@ -1,0 +1,323 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{amsmath}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{hyperref}
+
+\hypersetup{colorlinks=true, linkcolor=black, urlcolor=blue, citecolor=black}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  keywordstyle=\color{blue!60!black},
+  commentstyle=\color{green!40!black},
+  stringstyle=\color{orange!50!black},
+  showstringspaces=false,
+  breaklines=true,
+  frame=single
+}
+
+\title{Project 3 Report\\\large Matrix Multiplication in C and Performance Optimization}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{Project Topic}
+This project implements dense matrix multiplication in C and compares several optimization strategies on square matrices of different sizes.
+
+\section{Experimental Environment}
+\begin{itemize}
+    \item Operating system: Linux / WSL2
+    \item Kernel: \texttt{Linux ztw 6.6.87.2-microsoft-standard-WSL2 x86\_64}
+    \item Compiler: \texttt{cc (Ubuntu 13.3.0-6ubuntu2\textasciitilde24.04.1) 13.3.0}
+    \item Compiler flags: \texttt{-std=c11 -O3 -Wall -Wextra -pedantic}
+    \item Parallel support: OpenMP
+    \item BLAS library: OpenBLAS
+\end{itemize}
+
+The benchmark in this report was built and executed with:
+
+\begin{lstlisting}[language=bash]
+make clean
+make USE_OPENBLAS=1 USE_OPENMP=1
+./benchmark > 1.out
+\end{lstlisting}
+
+\section{Implemented Methods}
+The project includes five multiplication paths:
+\begin{itemize}
+    \item \texttt{plain}: baseline triple-loop implementation
+    \item \texttt{v1}: loop reordering from \texttt{ijk} to \texttt{ikj}
+    \item \texttt{v2}: blocked multiplication with OpenMP on top of \texttt{ikj}
+    \item \texttt{v3}: Strassen recursive multiplication
+    \item \texttt{openblas}: \texttt{cblas\_sgemm} as the external reference
+\end{itemize}
+All matrix elements use \texttt{float}.
+
+\section{Baseline Implementation: plain}
+The baseline version uses the standard triple nested loop:
+
+\begin{lstlisting}[language=C]
+for (i = 0; i < a->rows; ++i)
+    for (j = 0; j < b->cols; ++j)
+        for (k = 0; k < a->cols; ++k)
+            c->data[i * c->cols + j] +=
+                a->data[i * a->cols + k] * b->data[k * b->cols + j];
+\end{lstlisting}
+
+This version is simple and easy to explain, so it is a good baseline. Its main drawback is poor cache locality when accessing \texttt{B[k][j]} by column.
+
+\section{Improved Implementations}
+\subsection{v1: Loop Reordering}
+The idea of \texttt{v1} is to change the loop order from \texttt{ijk} to \texttt{ikj}. This allows the innermost loop to access one full row of \texttt{B} and one full row of \texttt{C} consecutively.
+
+\begin{lstlisting}[language=C]
+for (i = 0; i < a->rows; ++i) {
+    const float *a_row = &a->data[i * a->cols];
+    float *c_row = &c->data[i * c->cols];
+
+    for (k = 0; k < a->cols; ++k) {
+        const float a_ik = a_row[k];
+        const float *b_row = &b->data[k * b->cols];
+
+        for (j = 0; j < b->cols; ++j)
+            c_row[j] += a_ik * b_row[j];
+    }
+}
+\end{lstlisting}
+
+Main effects of \texttt{v1}:
+\begin{itemize}
+    \item more contiguous memory access for \texttt{B} and \texttt{C}
+    \item fewer cache misses than the baseline
+    \item more friendly to compiler auto-vectorization
+\end{itemize}
+
+This version is not a hand-written SIMD intrinsic implementation. However, it is SIMD-friendly. GCC vectorization reports show that the innermost \texttt{j} loop in \texttt{v1} was automatically vectorized under \texttt{-O3 -fopenmp}:
+
+\begin{lstlisting}
+matmul.c:91:27: optimized: loop vectorized using 16 byte vectors
+matmul.c:91:27: optimized: loop versioned for vectorization because of possible aliasing
+\end{lstlisting}
+
+\subsection{v2: Blocking + OpenMP}
+\texttt{v2} adds cache blocking on top of the \texttt{ikj} traversal. The matrix is split into smaller tiles with block size \texttt{64}.
+
+\begin{lstlisting}[language=C]
+for (i0 = 0; i0 < a->rows; i0 += MATMUL_BLOCK_SIZE) {
+    size_t i1 = i0 + MATMUL_BLOCK_SIZE < a->rows ?
+                i0 + MATMUL_BLOCK_SIZE : a->rows;
+
+    for (k0 = 0; k0 < a->cols; k0 += MATMUL_BLOCK_SIZE) {
+        size_t k1 = k0 + MATMUL_BLOCK_SIZE < a->cols ?
+                    k0 + MATMUL_BLOCK_SIZE : a->cols;
+
+        for (j0 = 0; j0 < b->cols; j0 += MATMUL_BLOCK_SIZE) {
+            size_t j1 = j0 + MATMUL_BLOCK_SIZE < b->cols ?
+                        j0 + MATMUL_BLOCK_SIZE : b->cols;
+
+            for (i = i0; i < i1; ++i)
+                for (k = k0; k < k1; ++k)
+                    for (j = j0; j < j1; ++j)
+                        c_row[j] += a_ik * b_row[j];
+        }
+    }
+}
+\end{lstlisting}
+
+OpenMP is applied to the outer block loop:
+
+\begin{lstlisting}[language=C]
+#pragma omp parallel for schedule(static) private(j0, k0)
+\end{lstlisting}
+
+Main effects of \texttt{v2}:
+\begin{itemize}
+    \item improved cache locality through blocking
+    \item parallel execution through OpenMP
+    \item much better performance on medium and large matrices
+\end{itemize}
+
+GCC vectorization reports also show auto-vectorization inside the block kernel:
+
+\begin{lstlisting}
+matmul.c:134:40: optimized: loop vectorized using 16 byte vectors
+matmul.c:134:40: optimized: loop versioned for vectorization because of possible aliasing
+\end{lstlisting}
+
+So the speedup of \texttt{v2} comes from blocking, OpenMP, and compiler auto-vectorization.
+
+\subsection{v3: Strassen Recursive Algorithm}
+\texttt{v3} uses the Strassen algorithm, which is an algorithm-level optimization rather than a simple loop optimization. A matrix is split into four submatrices:
+
+\[
+A = \begin{bmatrix} A_{11} & A_{12} \\ A_{21} & A_{22} \end{bmatrix},
+\quad
+B = \begin{bmatrix} B_{11} & B_{12} \\ B_{21} & B_{22} \end{bmatrix}
+\]
+
+Strassen computes seven intermediate products:
+\[
+\begin{aligned}
+M_1 &= (A_{11} + A_{22})(B_{11} + B_{22}) \\
+M_2 &= (A_{21} + A_{22})B_{11} \\
+M_3 &= A_{11}(B_{12} - B_{22}) \\
+M_4 &= A_{22}(B_{21} - B_{11}) \\
+M_5 &= (A_{11} + A_{12})B_{22} \\
+M_6 &= (A_{21} - A_{11})(B_{11} + B_{12}) \\
+M_7 &= (A_{12} - A_{22})(B_{21} + B_{22})
+\end{aligned}
+\]
+
+Then the result blocks are reconstructed as:
+\[
+\begin{aligned}
+C_{11} &= M_1 + M_4 - M_5 + M_7 \\
+C_{12} &= M_3 + M_5 \\
+C_{21} &= M_2 + M_4 \\
+C_{22} &= M_1 - M_2 + M_3 + M_6
+\end{aligned}
+\]
+
+The implementation follows this structure directly. A representative code fragment is:
+
+\begin{lstlisting}[language=C]
+if ((rc = matrix_add(a11, a22, s1, 1)) != 0) goto cleanup;
+if ((rc = matrix_add(b11, b22, s2, 1)) != 0) goto cleanup;
+if ((rc = matmul_strassen_recursive(s1, s2, m1)) != 0) goto cleanup;
+...
+if ((rc = matrix_add(m1, m4, c11, 1)) != 0) goto cleanup;
+if ((rc = matrix_add(c11, m5, c11, -1)) != 0) goto cleanup;
+if ((rc = matrix_add(c11, m7, c11, 1)) != 0) goto cleanup;
+\end{lstlisting}
+
+Its theoretical complexity is lower than classical \(O(n^3)\), but the actual implementation introduces heavy recursion, temporary matrix allocation, and data movement. Therefore, it does not necessarily outperform \texttt{v2} in practice.
+
+\section{Correctness Check}
+According to \texttt{1.out}, all small validation cases passed:
+\begin{itemize}
+    \item \texttt{plain vs v1}: \texttt{n=4,7,16,31} all PASS
+    \item \texttt{plain vs v2}: \texttt{n=4,7,16,31} all PASS
+    \item \texttt{plain vs v3}: \texttt{n=4,7,16,31} all PASS
+    \item \texttt{v3 vs OpenBLAS}: \texttt{n=4,7,16,31} all PASS
+\end{itemize}
+
+This shows that all three improved versions produced correct results in the tested cases, and \texttt{v3} matched OpenBLAS as well.
+
+\section{Benchmark Results}
+\subsection{Results for \(n = 16\)}
+\begin{center}
+\begin{tabular}{lrrl}
+\toprule
+Implementation & Time (s) & GFLOPS & Correctness \\
+\midrule
+plain    & 0.000003    & 2.990    & PASS \\
+v1       & 0.000001    & 6.776    & PASS \\
+v2       & 0.000042    & 0.194    & PASS \\
+v3       & 0.000042    & 0.194    & PASS \\
+openblas & 0.000000    & 16.483   & PASS \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Results for \(n = 128\)}
+\begin{center}
+\begin{tabular}{lrrl}
+\toprule
+Implementation & Time (s) & GFLOPS & Correctness \\
+\midrule
+plain    & 0.001897    & 2.211    & PASS \\
+v1       & 0.000326    & 12.856   & PASS \\
+v2       & 0.000645    & 6.502    & PASS \\
+v3       & 0.000246    & 17.032   & PASS \\
+openblas & 0.000038    & 110.009  & PASS \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Results for \(n = 1024\)}
+\begin{center}
+\begin{tabular}{lrrl}
+\toprule
+Implementation & Time (s) & GFLOPS & Correctness \\
+\midrule
+plain    & 2.227743    & 0.964     & PASS \\
+v1       & 0.087690    & 24.490    & PASS \\
+v2       & 0.019736    & 108.811   & PASS \\
+v3       & 0.291508    & 7.367     & PASS \\
+openblas & 0.002139    & 1004.035  & PASS \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Results for \(n = 8192\)}
+\begin{center}
+\begin{tabular}{lrrl}
+\toprule
+Implementation & Time (s) & GFLOPS & Correctness \\
+\midrule
+plain    & 7013.361078  & 0.157    & PASS \\
+v1       & 113.915864   & 9.652    & PASS \\
+v2       & 8.246949     & 133.323  & PASS \\
+v3       & 66.821979    & 16.454   & PASS \\
+openblas & 1.632326     & 673.586  & PASS \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Comparison of the Three Improved Versions}
+\begin{center}
+\begin{tabular}{rrrrrrr}
+\toprule
+Size & v1 Time (s) & v1 GFLOPS & v2 Time (s) & v2 GFLOPS & v3 Time (s) & v3 GFLOPS \\
+\midrule
+16   & 0.000001   & 6.776   & 0.000042   & 0.194    & 0.000042   & 0.194 \\
+128  & 0.000326   & 12.856  & 0.000645   & 6.502    & 0.000246   & 17.032 \\
+1024 & 0.087690   & 24.490  & 0.019736   & 108.811  & 0.291508   & 7.367 \\
+8192 & 113.915864 & 9.652   & 8.246949   & 133.323  & 66.821979  & 16.454 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Result for \(n = 65536\)}
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Implementation & Result \\
+\midrule
+All implementations & allocation failed \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The output reports an estimated working set of \texttt{65536.00 MiB}, which could not be allocated in the current environment.
+
+\section{Result Analysis}
+\begin{enumerate}
+    \item The baseline \texttt{plain} version is always the slowest one. Its performance is especially poor for \(1024\) and \(8192\), which confirms that the original triple loop has poor cache locality on large matrices.
+    \item \texttt{v1} is clearly faster than \texttt{plain}, showing that loop reordering alone already improves memory access behavior.
+    \item \texttt{v2} is the best self-implemented version in this project. It reaches \texttt{108.811 GFLOPS} at \(1024\) and \texttt{133.323 GFLOPS} at \(8192\), much faster than \texttt{plain}, \texttt{v1}, and \texttt{v3}.
+    \item \texttt{v3} uses the Strassen recursive algorithm. Although its theoretical complexity is better, the current implementation suffers from recursive overhead, temporary matrix allocation, and extra matrix addition/subtraction. As a result, it is slower than \texttt{v2} in practice.
+    \item The comparison table of \texttt{v1}, \texttt{v2}, and \texttt{v3} shows that small-size results fluctuate more, but for representative sizes such as \(1024\) and \(8192\), \texttt{v2} is clearly the best among the three self-implemented optimized versions.
+    \item OpenBLAS is faster than every self-implemented version at all meaningful sizes, which is expected because it uses mature packing, vectorization, and threading strategies.
+\end{enumerate}
+
+\section{Conclusion}
+This project implemented four matrix multiplication methods: \texttt{plain}, \texttt{v1}, \texttt{v2}, and \texttt{v3}, and compared them with OpenBLAS.
+
+The benchmark results show:
+\begin{itemize}
+    \item \texttt{v1} confirms that loop reordering is an effective optimization.
+    \item \texttt{v2} demonstrates that blocking is the most successful optimization in this project for medium and large matrices.
+    \item \texttt{v3}, although based on the Strassen algorithm, does not outperform \texttt{v2} in the current implementation.
+    \item OpenBLAS remains the fastest overall implementation.
+\end{itemize}
+
+Therefore, if the criterion is the best self-implemented method, the best result in this project is \texttt{v2}. If the criterion is overall peak performance, OpenBLAS is the best performer.
+
+\end{document}
