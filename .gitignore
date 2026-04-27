@@ -6,3 +6,5 @@ settings.json
 .vscode
 *.exe
 build
+pull.txt
+.codex
