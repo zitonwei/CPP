@@ -31,7 +31,7 @@ int main()
     cout << "rp.getInfo():" <<rp.getInfo() << endl;
     cout << "ps->getInfo():" << ps->getInfo() << endl; // danger if getInfo is not virtual
 
-    char * p = (char*) 100;
+    // char * p = (char*) 100;
     // ps = dynamic_cast<Student*>(&person);
     // printf("address = %p\n", ps);
     // pp = dynamic_cast<Person*>(&student);
